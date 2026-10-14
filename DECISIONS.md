@@ -1,11 +1,6 @@
-# DECISIONS.md
-
-1. **Indexes.** `employees.emp_code` unique — concurrent duplicate creates yield exactly one 201, rest 409. `attendance_logs(emp_code, date)` unique — same guarantee for punch-in races, and it serves punch-in/out lookups. `attendance_logs(date, emp_code)` — the list endpoint's sort (`date` desc, `emp_code` asc) and the analytics `$match` stages. `employees(department, joined_on)` — headcount and department filters. I considered a dedicated `(emp_code, punch_in)` index for punch-out and rejected it: per-employee history is tiny and the unique `(emp_code, date)` index already narrows the scan to one employee.
-
-2. **Punch-in race.** Two identical requests compute the same document and both call `insert_one`. There is no check-then-insert. The unique `(emp_code, date)` index lets one insert win; the loser gets `DuplicateKeyError`, which I catch and turn into 409. Exactly one 201, rest 409 — enforced by the database, not by timing.
-
-3. **Ties.** The leaderboard ranks in the pipeline with `$setWindowFields` + `$rank`: tied totals share a rank and the next rank is skipped (1, 2, 2, 4). I filter `rank <= limit` after ranking, so a tie at the cutoff returns more than `limit` rows. Rows are ordered by total descending, then `emp_code` ascending.
-
-4. **Headcount.** The department summary starts from the `employees` collection (`joined_on <= month end`) and `$lookup`s each employee's logs with `preserveNullAndEmptyArrays`, so employees with zero logs still contribute to headcount while later joiners are excluded. Headcount never comes from the logs.
-
-5. **One thing you would change** for 100x data: pre-aggregate. A nightly job would roll each day's logs into per-employee/per-department summary documents, and the analytics endpoints would read those instead of scanning raw logs. The raw logs stay for audit; the hot paths stop touching them.
+DECISIONS.md
+Indexes. employees.emp_code unique — concurrent duplicate creates yield one 201, rest 409. attendance_logs(emp_code, date) unique — same for punch-ins. attendance_logs(date, emp_code) — list sort and analytics $match. employees(department, joined_on) — headcount and department filters. I considered (emp_code, punch_in) for punch-out and rejected it: per-employee history is tiny, and (emp_code, date) already narrows to one employee.
+Punch-in race. Both identical requests compute the same document and call insert_one — no check-then-insert. The unique (emp_code, date) index lets one win; the loser gets DuplicateKeyError, caught as 409. One 201, rest 409, enforced by the database.
+Ties. The pipeline ranks with $setWindowFields + $rank: ties share a rank, next skipped (1, 2, 2, 4). Filtering rank <= limit after ranking means a tie at the cutoff returns more than limit rows, ordered total desc, emp_code asc.
+Headcount. The summary starts from employees (joined_on <= month end) and $lookups logs with preserveNullAndEmptyArrays, so zero-log employees count and later joiners don't. Headcount never comes from the logs.
+100x data. Pre-aggregate: a nightly job rolls each day into per-employee/per-department summaries, and analytics read those instead of scanning raw logs. Raw logs stay for audit.
